@@ -1,7 +1,13 @@
+// Constants.kt
 package com.example.yololitertobjectdetection
 
-object Constants {
-    const val MODEL_PATH = "yolov12n_float16.tflite"
+import android.content.Context
 
-    val LABELS_PATH: String? = null // provide your labels.txt file if the metadata not present in the model
+object Constants {
+    // Dynamic model path based on preferences
+    fun getModelPath(context: Context): String {
+        return ModelPreferences.getSelectedModel(context)
+    }
+
+    val LABELS_PATH: String? = null
 }

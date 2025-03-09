@@ -17,7 +17,7 @@
 
     <fragment
         android:id="@+id/cameraFragment"
-        android:name="com.example.yololitertobjectdetection.ui.CameraFragmentOld"
+        android:name="com.example.yololitertobjectdetection.ui.CameraFragment"
         android:label="fragment_camera"
         tools:layout="@layout/fragment_camera" />
 </navigation>
