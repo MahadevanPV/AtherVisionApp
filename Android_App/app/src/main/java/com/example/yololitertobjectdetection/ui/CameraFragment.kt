@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
@@ -38,14 +39,20 @@ import java.util.concurrent.atomic.AtomicBoolean
 import androidx.navigation.fragment.findNavController
 import androidx.appcompat.app.AlertDialog
 import android.content.Intent
+import java.util.LinkedList
 
 class CameraFragment : Fragment(), Detector.DetectorListener {
     private var _binding: FragmentCameraBinding? = null
     private val binding get() = _binding!!
     private val distanceCalculator = GeometricDistanceCalculator()
 
-    private var lastProcessingTimeMs = 0L
-    private val FRAME_INTERVAL_MS = 100 // 10 FPS (1000ms / 10 = 100ms)
+    // Frame skipping variables for adaptive processing
+    private var frameCounter = 0
+    private var currentFrameSkip = 2  // Start with processing every 3rd frame
+    private val processingTimesMs = LinkedList<Long>() // Track recent processing times
+    private val MAX_PROCESSING_TIMES_TRACKED = 10 // Number of times to track for averaging
+    private var lastAdaptationTime = 0L // Track last time we adapted frame skip
+    private val ADAPTATION_INTERVAL_MS = 2000 // Adapt every 2 seconds
 
     private val isFrontCamera = false
     private var preview: Preview? = null
@@ -186,7 +193,6 @@ class CameraFragment : Fragment(), Detector.DetectorListener {
 
             cameraExecutor = Executors.newSingleThreadExecutor()
 
-
             try {
                 val modelPath = Constants.getModelPath(requireContext())
                 Log.d(TAG, "Loading model from: $modelPath")
@@ -325,6 +331,12 @@ class CameraFragment : Fragment(), Detector.DetectorListener {
                         return@setAnalyzer
                     }
 
+                    // Skip frames based on adaptive frame skipping
+                    if (frameCounter++ % (currentFrameSkip + 1) != 0) {
+                        imageProxy.close()
+                        return@setAnalyzer
+                    }
+
                     val bitmapBuffer =
                         Bitmap.createBitmap(
                             imageProxy.width,
@@ -451,6 +463,57 @@ class CameraFragment : Fragment(), Detector.DetectorListener {
         }
     }
 
+    // Adaptive frame skip logic - adjusts based on processing times
+    private fun adaptFrameSkip(processingTimeMs: Long) {
+        // Add to processing times history
+        processingTimesMs.add(processingTimeMs)
+        if (processingTimesMs.size > MAX_PROCESSING_TIMES_TRACKED) {
+            processingTimesMs.removeFirst()
+        }
+
+        // Only adapt every few seconds to avoid rapid changes
+        val currentTime = SystemClock.elapsedRealtime()
+        if (currentTime - lastAdaptationTime < ADAPTATION_INTERVAL_MS) {
+            return
+        }
+        lastAdaptationTime = currentTime
+
+        // Wait until we have enough data points
+        if (processingTimesMs.size >= 5) {
+            val avgProcessingTime = processingTimesMs.average().toLong()
+
+            // Calculate new frame skip value based on average processing time
+            val newFrameSkip = when {
+                avgProcessingTime > 200 -> 3  // Very slow: process every 4th frame
+                avgProcessingTime > 150 -> 2  // Slow: process every 3rd frame
+                avgProcessingTime > 80 -> 1   // Moderate: process every 2nd frame
+                else -> 0                     // Fast: process every frame
+            }
+
+            // Only update if the frame skip value changed
+            if (newFrameSkip != currentFrameSkip) {
+                currentFrameSkip = newFrameSkip
+
+                // Log the adaptation for debugging
+                Log.d(TAG, "Adaptive frame skip adjusted to: $currentFrameSkip (avg processing time: $avgProcessingTime ms)")
+
+                // Show a transient message about adaptive performance
+                requireActivity().runOnUiThread {
+                    if (isAdded && !isDetached && _binding != null && !stopProcessing.get()) {
+                        val fps = when (currentFrameSkip) {
+                            0 -> "Max FPS"
+                            1 -> "1/2 FPS"
+                            2 -> "1/3 FPS"
+                            else -> "1/${currentFrameSkip + 1} FPS"
+                        }
+                        val message = "Performance adaptation: $fps mode"
+                        Toast.makeText(requireContext(), message, Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "CameraFragment"
         private const val REQUEST_CODE_PERMISSIONS = 10
@@ -475,6 +538,9 @@ class CameraFragment : Fragment(), Detector.DetectorListener {
     override fun onDetect(boundingBoxes: List<BoundingBox>, inferenceTime: Long, detailedTiming: Map<String, Long>) {
         try {
             if (!isAdded || isDetached || _binding == null || stopProcessing.get()) return
+
+            // Adapt frame skipping based on processing performance
+            adaptFrameSkip(inferenceTime)
 
             // Create modified bounding boxes with distance information
             val boundingBoxesWithDistance = boundingBoxes.map { box ->
@@ -501,8 +567,15 @@ class CameraFragment : Fragment(), Detector.DetectorListener {
                         setResults(boundingBoxesWithDistance)
                         invalidate()
                     }
-                    // Update the latency text
-                    binding.tvLatency?.text = "Latency: $inferenceTime ms"
+
+                    // Update the latency text with frame skip information
+                    val frameRateInfo = when (currentFrameSkip) {
+                        0 -> "Max"
+                        1 -> "1/2"
+                        2 -> "1/3"
+                        else -> "1/${currentFrameSkip + 1}"
+                    }
+                    binding.tvLatency?.text = "Latency: $inferenceTime ms (FPS: $frameRateInfo)"
                 }
             }
         } catch (e: Exception) {

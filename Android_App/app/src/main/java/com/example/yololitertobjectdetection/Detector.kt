@@ -3,6 +3,7 @@ package com.example.yololitertobjectdetection
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.SystemClock
+import android.util.Log
 import com.example.yololitertobjectdetection.MetaData.extractNamesFromLabelFile
 import com.example.yololitertobjectdetection.MetaData.extractNamesFromMetadata
 import org.tensorflow.lite.DataType
@@ -15,8 +16,6 @@ import org.tensorflow.lite.support.common.ops.NormalizeOp
 import org.tensorflow.lite.support.image.ImageProcessor
 import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.tensorbuffer.TensorBuffer
-import android.util.Log
-
 
 class Detector(
     private val context: Context,
@@ -33,6 +32,13 @@ class Detector(
     private var numChannel = 0
     private var numElements = 0
     private var isYoloV12Format = false  // Flag to track model format
+
+    // Add frame caching variables
+    private var lastFrameHash: Int = 0
+    private var lastResults: List<BoundingBox> = emptyList()
+    private var cacheHits = 0
+    private var cacheMisses = 0
+    private val HASH_THRESHOLD = 150 // Threshold for similarity - adjust based on testing
 
     private val imageProcessor = ImageProcessor.Builder()
         .add(NormalizeOp(INPUT_MEAN, INPUT_STANDARD_DEVIATION))
@@ -116,6 +122,65 @@ class Detector(
         }
     }
 
+    // Bitmap hash calculation helper
+    private fun Bitmap.calculateHash(): Int {
+        // Create a 16x16 downsampled version for hash comparison
+        val size = 16
+        val scaledBitmap = Bitmap.createScaledBitmap(this, size, size, true)
+
+        // Calculate average color
+        var r = 0
+        var g = 0
+        var b = 0
+        var pixelCount = 0
+
+        // Simple grid sampling (every 4th pixel) for faster calculation
+        for (x in 0 until size step 4) {
+            for (y in 0 until size step 4) {
+                val pixel = scaledBitmap.getPixel(x, y)
+                r += (pixel shr 16) and 0xff
+                g += (pixel shr 8) and 0xff
+                b += pixel and 0xff
+                pixelCount++
+            }
+        }
+
+        // Calculate averages
+        r /= pixelCount
+        g /= pixelCount
+        b /= pixelCount
+
+        // Create a perceptual hash by comparing pixels to average
+        var hash = 0
+        var bitPos = 0
+
+        // Create hash from a subset of pixels (faster)
+        for (x in 0 until size step 4) {
+            for (y in 0 until size step 4) {
+                if (bitPos >= 31) break // Int can hold 32 bits
+
+                val pixel = scaledBitmap.getPixel(x, y)
+                val pr = (pixel shr 16) and 0xff
+                val pg = (pixel shr 8) and 0xff
+                val pb = pixel and 0xff
+
+                // Set bit if pixel is brighter than average
+                if ((pr + pg + pb) / 3 > (r + g + b) / 3) {
+                    hash = hash or (1 shl bitPos)
+                }
+
+                bitPos++
+            }
+        }
+
+        // Clean up
+        if (scaledBitmap != this) {
+            scaledBitmap.recycle()
+        }
+
+        return hash
+    }
+
     fun restart(isGpu: Boolean) {
         interpreter.close()
 
@@ -137,8 +202,13 @@ class Detector(
 
         val model = FileUtil.loadMappedFile(context, modelPath)
         interpreter = Interpreter(model, options)
-    }
 
+        // Reset cache when restarting
+        lastFrameHash = 0
+        lastResults = emptyList()
+        cacheHits = 0
+        cacheMisses = 0
+    }
 
     fun close() {
         interpreter.close()
@@ -152,6 +222,25 @@ class Detector(
 
         // Start overall timing
         val totalStartTime = SystemClock.uptimeMillis()
+
+        // Check frame hash to see if we can use cached results
+        val frameHash = frame.calculateHash()
+        val hashDifference = Math.abs(frameHash - lastFrameHash)
+
+        if (hashDifference < HASH_THRESHOLD && lastResults.isNotEmpty()) {
+            // Use cached results
+            cacheHits++
+
+            Log.d("Detector", "Cache hit! Using cached results. " +
+                    "Hits: $cacheHits, Misses: $cacheMisses. Hash diff: $hashDifference")
+
+            val cachedProcessingTime = 1L // Virtually instant
+            detectorListener.onDetect(lastResults, cachedProcessingTime)
+            return
+        }
+
+        // Cache miss - need to process the frame
+        cacheMisses++
 
         // Timing for image preprocessing
         val preprocessingStartTime = SystemClock.uptimeMillis()
@@ -186,6 +275,16 @@ class Detector(
         if (bestBoxes.isEmpty()) {
             detectorListener.onEmptyDetect()
             return
+        }
+
+        // Update cache
+        lastFrameHash = frameHash
+        lastResults = bestBoxes
+
+        // Log cache statistics periodically
+        if ((cacheHits + cacheMisses) % 100 == 0) {
+            val hitRate = (cacheHits * 100.0) / (cacheHits + cacheMisses)
+            Log.d("Detector", "Cache stats: Hit rate: $hitRate% (Hits: $cacheHits, Misses: $cacheMisses)")
         }
 
         // Create timing information map
