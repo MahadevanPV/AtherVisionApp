@@ -35,9 +35,9 @@ class HomeFragment : Fragment() {
 
     private fun showModelSelectionDialog() {
         val models = arrayOf(
-            "YOLOv10 (Balanced)",
-            "YOLOv11 (Faster)",
-            "YOLOv12 (More Accurate)"
+            "Small - Balanced Performance",
+            "Medium - Faster & Accurate",
+            "Large - More Accurate & Slower"
         )
 
         // Find the current model

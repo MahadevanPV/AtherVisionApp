@@ -32,7 +32,10 @@ class Detector(
     private var numChannel = 0
     private var numElements = 0
     private var isYoloV12Format = false  // Flag to track model format
-
+    private var vehicleClasses = listOf(
+        "car", "truck", "bus", "motorcycle", "motorbike",
+        "bicycle", "train", "airplane", "boat", "ship"
+    )
     // Add frame caching variables
     private var lastFrameHash: Int = 0
     private var lastResults: List<BoundingBox> = emptyList()
@@ -315,12 +318,14 @@ class Detector(
                 val y2 = array[r * numChannel + 3]
                 val cls = array[r * numChannel + 5].toInt()
                 val clsName = if (cls < labels.size) labels[cls] else "unknown"
-                boundingBoxes.add(
-                    BoundingBox(
-                        x1 = x1, y1 = y1, x2 = x2, y2 = y2,
-                        cnf = cnf, cls = cls, clsName = clsName
+                if (clsName != "unknown" && vehicleClasses.any { vehicle -> clsName.equals(vehicle, ignoreCase = true) }) {
+                    boundingBoxes.add(
+                        BoundingBox(
+                            x1 = x1, y1 = y1, x2 = x2, y2 = y2,
+                            cnf = cnf, cls = cls, clsName = clsName
+                        )
                     )
-                )
+                }
             }
         }
         return boundingBoxes
@@ -362,12 +367,14 @@ class Detector(
 
                 // Create bounding box
                 val clsName = if (maxClassIndex < labels.size) labels[maxClassIndex] else "unknown"
-                boundingBoxes.add(
-                    BoundingBox(
-                        x1 = x1, y1 = y1, x2 = x2, y2 = y2,
-                        cnf = maxClassScore, cls = maxClassIndex, clsName = clsName
+                if (clsName != "unknown" && vehicleClasses.any { vehicle -> clsName.equals(vehicle, ignoreCase = true) }) {
+                    boundingBoxes.add(
+                        BoundingBox(
+                            x1 = x1, y1 = y1, x2 = x2, y2 = y2,
+                            cnf = maxClassScore, cls = maxClassIndex, clsName = clsName
+                        )
                     )
-                )
+                }
             }
         }
 
